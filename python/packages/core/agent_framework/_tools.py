@@ -415,9 +415,7 @@ def _parse_inputs(  # pyright: ignore[reportUnusedFunction]
     if inputs is None:
         return []
 
-    from ._types import (
-        Content,
-    )
+    from ._types import Content
 
     parsed_inputs: list[Content] = []
     if not isinstance(inputs, list):
@@ -4407,9 +4405,7 @@ def _replace_approval_contents_with_results(
     Returns:
         The terminal contents produced while resolving the approval responses, in response order.
     """
-    from ._types import (
-        Content,
-    )
+    from ._types import APPROVAL_REJECTION_RESULT_KEY, Content
 
     result_groups_by_call_id: dict[str, deque[list[Content]]] = {}
     for result_group in approved_function_result_groups:
@@ -4535,7 +4531,10 @@ def _replace_approval_contents_with_results(
                         Content.from_function_result(
                             call_id=call_id,
                             result="Error: Tool call invocation was rejected by user.",
-                            additional_properties=content.function_call.additional_properties,
+                            additional_properties={
+                                **content.function_call.additional_properties,
+                                APPROVAL_REJECTION_RESULT_KEY: True,
+                            },
                         )
                     ]
                 if not replacements:

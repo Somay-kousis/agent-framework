@@ -433,6 +433,7 @@ ContentType = Literal[
     "function_approval_response",
     "oauth_consent_request",
 ]
+APPROVAL_REJECTION_RESULT_KEY = "_approval_rejection_result"
 
 
 class TextSpanRegion(TypedDict, total=False):
