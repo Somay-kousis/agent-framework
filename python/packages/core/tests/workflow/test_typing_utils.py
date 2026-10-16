@@ -551,6 +551,32 @@ def test_type_compatibility_collections() -> None:
     assert not is_type_compatible(set[Union[str, int]], set[str])
 
 
+def test_type_compatibility_builtin_container_to_abc() -> None:
+    """A parameterized builtin container fits a collections.abc target it implements when the arguments fit."""
+    from collections.abc import Collection, Iterable, Mapping, MutableMapping, MutableSequence, Sequence
+    from collections.abc import Set as AbstractSet
+
+    assert is_type_compatible(list[str], Sequence[str])
+    assert is_type_compatible(list[Message], Sequence[Message])
+    assert is_type_compatible(list[str], Sequence[Union[str, int]])
+    assert is_type_compatible(list[str], MutableSequence[str])
+    assert is_type_compatible(list[str], Iterable[str])
+    assert is_type_compatible(list[str], Collection[str])
+    assert is_type_compatible(set[int], AbstractSet[int])
+    assert is_type_compatible(frozenset[int], Iterable[int])
+    assert is_type_compatible(dict[str, int], Mapping[str, int])
+    assert is_type_compatible(dict[str, int], MutableMapping[str, Union[int, float]])
+
+    # element types still have to fit
+    assert not is_type_compatible(list[int], Sequence[str])
+    assert not is_type_compatible(list[Union[str, int]], Sequence[str])
+    assert not is_type_compatible(dict[str, int], Mapping[str, str])
+    # and the container still has to implement the target
+    assert not is_type_compatible(set[str], Sequence[str])
+    assert not is_type_compatible(list[str], Mapping[str, str])
+    assert not is_type_compatible(frozenset[int], MutableSequence[int])
+
+
 def test_type_compatibility_tuples() -> None:
     """Test type compatibility with tuple types."""
     # Fixed length tuples
