@@ -548,6 +548,19 @@ def is_type_compatible(source_type: type | UnionType | Any, target_type: type | 
         except TypeError:
             return False
 
+    # Case 4b: a builtin container and a collections.abc target it implements, with the same
+    # number of arguments (list[str] -> Sequence[str], dict[str, int] -> Mapping[str, int]).
+    # The arguments line up one to one, so compare them pairwise.
+    if (
+        isinstance(source_origin, type)
+        and isinstance(target_origin, type)
+        and source_origin.__module__ == "builtins"
+        and target_origin.__module__ == "collections.abc"
+        and len(source_args) == len(target_args)
+        and issubclass(source_origin, target_origin)
+    ):
+        return all(is_type_compatible(s_arg, t_arg) for s_arg, t_arg in zip(source_args, target_args, strict=True))
+
     # Case 5: different container types are not compatible
     if source_origin != target_origin:
         return False
