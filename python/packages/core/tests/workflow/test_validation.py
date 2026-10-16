@@ -117,6 +117,67 @@ def test_parameterized_output_to_bare_container_input_builds():
     WorkflowBuilder(start_executor=producer).add_edge(producer, consumer).build()
 
 
+async def test_parameterized_output_to_abc_container_input_builds_and_runs():
+    # A list[str] output going to a handler typed Sequence[str] used to fail
+    # validation, although the message is a Sequence[str] at runtime.
+    from collections.abc import Sequence
+
+    class Splitter(Executor):
+        @handler
+        async def split(self, text: str, ctx: WorkflowContext[list[str]]) -> None:
+            await ctx.send_message(text.split())
+
+    class Counter(Executor):
+        @handler
+        async def count(self, words: Sequence[str], ctx: WorkflowContext[None, int]) -> None:
+            await ctx.yield_output(len(words))
+
+    splitter = Splitter(id="splitter")
+    counter = Counter(id="counter")
+    workflow = WorkflowBuilder(start_executor=splitter).add_edge(splitter, counter).build()
+
+    events = await workflow.run("one two three")
+
+    assert events.get_outputs() == [3]
+
+
+def test_abc_container_input_still_rejects_mismatched_element_type():
+    from collections.abc import Sequence
+
+    class IntListProducer(Executor):
+        @handler
+        async def produce(self, message: str, ctx: WorkflowContext[list[int]]) -> None:
+            await ctx.send_message([len(message)])
+
+    class StrSequenceConsumer(Executor):
+        @handler
+        async def consume(self, words: Sequence[str], ctx: WorkflowContext) -> None:
+            pass
+
+    producer = IntListProducer(id="producer")
+    consumer = StrSequenceConsumer(id="consumer")
+
+    with pytest.raises(TypeCompatibilityError):
+        WorkflowBuilder(start_executor=producer).add_edge(producer, consumer).build()
+
+
+async def test_sequence_of_messages_start_executor_can_be_used_as_agent():
+    from collections.abc import Sequence
+
+    from agent_framework import Message
+
+    class Chat(Executor):
+        @handler
+        async def chat(self, messages: Sequence[Message], ctx: WorkflowContext[None, str]) -> None:
+            await ctx.yield_output(messages[-1].text)
+
+    agent = WorkflowBuilder(start_executor=Chat(id="chat")).build().as_agent()
+
+    response = await agent.run("hello")
+
+    assert response.text == "hello"
+
+
 def test_type_compatibility_validation_fails():
     string_executor = StringExecutor(id="string_executor")
     int_executor = IntExecutor(id="int_executor")
