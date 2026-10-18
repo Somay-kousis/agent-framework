@@ -521,6 +521,54 @@ class TestBasicExecutorsCoverage:
         result = state.get("Local.greeting")
         assert result == "World"
 
+    @pytest.mark.parametrize(
+        ("field", "text", "expected"),
+        [
+            ("value", "Test content", "Test content"),
+            ("value", "Hello {Local.name}!", "Hello World!"),
+            ("value", "# TASK\n{Local.name}\n\n# TEAM\n{Local.team}", "# TASK\nWorld\n\n# TEAM\nPlanner"),
+            ("value", "[{Local.missing}]", "[]"),
+            ("value", 42, "42"),
+            ("text", "Hello {Local.name}!", "Hello World!"),
+        ],
+        ids=["value-literal", "value-template", "value-multiline", "value-unresolved", "value-number", "text-template"],
+    )
+    async def test_set_text_variable_executor_reads_value_and_fills_template(
+        self, mock_context, mock_state, field, text, expected
+    ):
+        """SetTextVariable takes its text from 'value' (as in .NET and the samples) and fills {Variable.Path}."""
+        from agent_framework_declarative._workflows._executors_basic import (
+            SetTextVariableExecutor,
+        )
+
+        state = DeclarativeWorkflowState(mock_state)
+        state.initialize()
+        state.set("Local.name", "World")
+        state.set("Local.team", "Planner")
+
+        action_def = {"kind": "SetTextVariable", "variable": "Local.greeting", field: text}
+        executor = SetTextVariableExecutor(action_def)
+        await executor.handle_action(ActionTrigger(), mock_context)
+
+        assert state.get("Local.greeting") == expected
+
+    @_requires_powerfx
+    async def test_set_text_variable_executor_value_expression(self, mock_context, mock_state):
+        """A '=' expression in SetTextVariable's 'value' is evaluated."""
+        from agent_framework_declarative._workflows._executors_basic import (
+            SetTextVariableExecutor,
+        )
+
+        state = DeclarativeWorkflowState(mock_state)
+        state.initialize()
+        state.set("Local.name", "World")
+
+        action_def = {"kind": "SetTextVariable", "variable": "Local.greeting", "value": "=Local.name"}
+        executor = SetTextVariableExecutor(action_def)
+        await executor.handle_action(ActionTrigger(), mock_context)
+
+        assert state.get("Local.greeting") == "World"
+
     async def test_set_multiple_variables_executor(self, mock_context, mock_state):
         """Test SetMultipleVariablesExecutor."""
         from agent_framework_declarative._workflows._executors_basic import (

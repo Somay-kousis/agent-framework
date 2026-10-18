@@ -392,6 +392,46 @@ actions:
         assert "from variable" in saved
 
 
+class TestWorkflowFactorySetTextVariable:
+    """SetTextVariable through a real factory run. Templates only, so no PowerFx needed."""
+
+    @pytest.mark.parametrize(
+        ("text_yaml", "expected"),
+        [
+            ("value: Test content", "Test content"),
+            ('value: "Hello {Local.name}!"', "Hello World!"),
+            (
+                "value: |-\n      # TASK\n      {Local.name}\n\n      # TEAM\n      {Local.team}",
+                "# TASK\nWorld\n\n# TEAM\nPlanner",
+            ),
+            ('value: "[{Local.missing}]"', "[]"),
+            ("value: 42", "42"),
+            ('text: "Hello {Local.name}!"', "Hello World!"),
+        ],
+        ids=["value-literal", "value-template", "value-multiline", "value-unresolved", "value-number", "text-template"],
+    )
+    async def test_set_text_variable_sets_filled_text(self, text_yaml: str, expected: str) -> None:
+        """The .NET / DeepResearch.yaml shape (variable + value) must store the text with {Variable.Path} filled."""
+        workflow = WorkflowFactory().create_workflow_from_yaml(f"""
+name: set-text-variable
+actions:
+  - kind: SetValue
+    path: Local.name
+    value: World
+  - kind: SetValue
+    path: Local.team
+    value: Planner
+  - kind: SetTextVariable
+    variable: Local.greeting
+    {text_yaml}
+  - kind: SendActivity
+    activity: "<{{Local.greeting}}>"
+""")
+        result = await workflow.run({})
+
+        assert result.get_outputs() == [f"<{expected}>"]
+
+
 @_requires_powerfx
 class TestWorkflowFactoryExecution:
     """Tests for workflow execution."""

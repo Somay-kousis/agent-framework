@@ -135,10 +135,14 @@ class SetTextVariableExecutor(DeclarativeActionExecutor):
         state = await self._ensure_state_initialized(ctx, trigger)
 
         path = _get_variable_path(self._action_def)
-        text = self._action_def.get("text", "")
+        # 'value' is the schema field (.NET, samples); 'text' is kept for existing Python workflows
+        text = self._action_def.get("value", self._action_def.get("text", ""))
 
         if path:
-            evaluated_text = state.eval_if_expression(text)
+            if isinstance(text, str) and not text.startswith("="):
+                evaluated_text = state.interpolate_string(text)
+            else:
+                evaluated_text = state.eval_if_expression(text)
             state.set(path, str(evaluated_text) if evaluated_text is not None else "")
 
         await ctx.send_message(ActionComplete())
