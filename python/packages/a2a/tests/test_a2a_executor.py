@@ -1080,3 +1080,85 @@ class TestA2AExecutorForwardedKwargs:
             await executor.execute(request_context, mock_event_queue)
 
         assert mock_agent.run.call_args.kwargs["function_invocation_kwargs"] == {"tenant": "acme"}
+
+
+class TestA2AExecutorInputParts:
+    """The executor must pass every part of the incoming A2A message to the agent, not only its text."""
+
+    @staticmethod
+    async def _run_with_parts(parts: list[Part], *, stream: bool = False) -> Any:
+        from a2a.server.agent_execution import RequestContext
+        from a2a.server.context import ServerCallContext
+        from a2a.types import Message as A2AMessage
+        from a2a.types import Role, SendMessageRequest
+
+        agent = MagicMock(spec=SupportsAgentRun)
+        agent.create_session = MagicMock()
+        if stream:
+            response_stream = MagicMock()
+            response_stream.with_transform_hook = MagicMock(return_value=response_stream)
+            response_stream.get_final_response = AsyncMock()
+            agent.run = MagicMock(return_value=response_stream)
+        else:
+            agent.run = AsyncMock(return_value=AgentResponse(messages=[]))
+        request_context = RequestContext(
+            ServerCallContext(),
+            request=SendMessageRequest(message=A2AMessage(message_id="m1", role=Role.ROLE_USER, parts=parts)),
+            task_id="task-1",
+            context_id="ctx-1",
+        )
+        event_queue = AsyncMock()
+
+        with patch("agent_framework_a2a._a2a_executor.TaskUpdater") as mock_updater_class:
+            mock_updater = MagicMock()
+            for name in ("submit", "start_work", "complete", "update_status"):
+                setattr(mock_updater, name, AsyncMock())
+            mock_updater_class.return_value = mock_updater
+            await A2AExecutor(agent, stream=stream).execute(request_context, event_queue)
+
+        mock_updater.complete.assert_called_once()
+        return agent.run.call_args.args[0]
+
+    async def test_text_only_message_is_passed_as_text(self) -> None:
+        received = await self._run_with_parts([Part(text="first"), Part(text="second")])
+
+        assert received == "first\nsecond"
+
+    async def test_file_parts_reach_the_agent(self) -> None:
+        image = b"\x89PNG\r\n\x1a\nimage-bytes"
+        received = await self._run_with_parts([
+            Part(text="What is in this picture?"),
+            Part(raw=image, media_type="image/png", filename="cat.png"),
+            Part(url="https://example.com/report.pdf", media_type="application/pdf", filename="report.pdf"),
+        ])
+
+        assert isinstance(received, Message)
+        assert received.role == "user"
+        assert [content.type for content in received.contents] == ["text", "data", "uri"]
+        text, data, uri = received.contents
+        assert text.text == "What is in this picture?"
+        assert data.media_type == "image/png"
+        assert data.name == "cat.png"
+        assert data.uri == Content.from_data(data=image, media_type="image/png").uri
+        assert uri.uri == "https://example.com/report.pdf"
+        assert uri.media_type == "application/pdf"
+        assert uri.name == "report.pdf"
+
+    async def test_file_only_message_is_not_sent_as_empty_text(self) -> None:
+        received = await self._run_with_parts([Part(raw=b"%PDF-1.7", media_type="application/pdf")], stream=True)
+
+        assert isinstance(received, Message)
+        assert [content.type for content in received.contents] == ["data"]
+        assert received.contents[0].media_type == "application/pdf"
+
+    async def test_data_part_is_passed_as_json_text(self) -> None:
+        from google.protobuf.struct_pb2 import Value
+
+        value = Value()
+        value.struct_value.update({"city": "Paris"})
+        received = await self._run_with_parts([Part(text="Book it"), Part(data=value)])
+
+        assert isinstance(received, Message)
+        assert [content.type for content in received.contents] == ["text", "text"]
+        assert received.contents[0].text == "Book it"
+        assert '"city": "Paris"' in (received.contents[1].text or "")

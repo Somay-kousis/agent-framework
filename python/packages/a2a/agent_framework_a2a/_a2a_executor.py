@@ -12,10 +12,12 @@ from a2a.helpers import new_task_from_user_message
 from a2a.server.agent_execution import AgentExecutor, RequestContext
 from a2a.server.events import EventQueue
 from a2a.server.tasks import TaskUpdater
+from a2a.types import Message as A2AMessage
 from a2a.types import Part, TaskState
 from agent_framework import (
     AgentResponseUpdate,
     AgentSession,
+    Content,
     Message,
     SupportsAgentRun,
 )
@@ -42,6 +44,48 @@ _RESERVED_KWARGS = frozenset({
     "function_invocation_kwargs",
     "client_kwargs",
 })
+
+
+def _agent_input_from_a2a_message(message: A2AMessage, text_input: str) -> str | Message:
+    """Build the agent input from an incoming A2A message.
+
+    A text-only message keeps being passed as its joined text. A message with file or data parts is
+    passed as a user ``Message`` so those parts reach the agent instead of being dropped.
+    """
+    parts = list(message.parts)
+    if all(part.WhichOneof("content") == "text" for part in parts):
+        return text_input
+
+    contents: list[Content] = []
+    for part in parts:
+        match part.WhichOneof("content"):
+            case "text":
+                contents.append(Content.from_text(text=part.text, raw_representation=part))
+            case "url":
+                contents.append(
+                    Content.from_uri(
+                        uri=part.url,
+                        media_type=part.media_type or None,
+                        name=part.filename or None,
+                        raw_representation=part,
+                    )
+                )
+            case "raw":
+                contents.append(
+                    Content.from_data(
+                        data=part.raw,
+                        media_type=part.media_type or "application/octet-stream",
+                        name=part.filename or None,
+                        raw_representation=part,
+                    )
+                )
+            case "data":
+                from google.protobuf.json_format import MessageToJson
+
+                contents.append(Content.from_text(text=MessageToJson(part.data), raw_representation=part))
+            case other:
+                logger.debug("Skipping unsupported A2A part type: %s", other)
+    return Message(role="user", contents=contents)
 
 
 class A2AExecutor(AgentExecutor):
@@ -203,7 +247,7 @@ class A2AExecutor(AgentExecutor):
             raise ValueError("Message must be provided in the RequestContext")
 
         mark_feature_used(FeatureIndex.A2A)
-        query = context.get_user_input()
+        query = _agent_input_from_a2a_message(context.message, context.get_user_input())
         task = context.current_task
 
         if not task:
