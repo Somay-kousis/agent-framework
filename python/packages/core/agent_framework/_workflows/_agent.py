@@ -699,6 +699,9 @@ class WorkflowAgent(BaseAgent):
                     updates[-1].continuation_token = data.continuation_token
                     _copy_operation_state(cast(AgentResponse[Any], data), updates[-1])
                     updates[-1].additional_properties = dict(data.additional_properties)
+                    # Updates carry usage as content; without it the streamed response loses the token counts.
+                    if data.usage_details is not None:
+                        updates[-1].contents.append(Content.from_usage(data.usage_details))
                 return updates
             if isinstance(data, Message):
                 return [
