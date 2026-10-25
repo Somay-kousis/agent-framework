@@ -12772,6 +12772,84 @@ async def test_plain_session_multiturn_has_isolated_budget_state_per_invocation(
     assert _FUNCTION_INVOCATION_BUDGET_STATE_KEY not in session.state
 
 
+@pytest.mark.parametrize(
+    "failure",
+    [RuntimeError("transient provider error"), asyncio.CancelledError()],
+    ids=["provider_error", "cancelled"],
+)
+@pytest.mark.parametrize("streaming", [False, True], ids=["non_streaming", "streaming"])
+async def test_failed_run_does_not_carry_budget_state_into_next_run(
+    chat_client_base: SupportsChatGetResponse,
+    monkeypatch: pytest.MonkeyPatch,
+    streaming: bool,
+    failure: BaseException,
+) -> None:
+    """A run that fails or is cancelled mid-loop releases the session budget, so a retry gets a full budget."""
+    from agent_framework._harness._tool_approval import ToolApprovalMiddleware
+    from agent_framework._sessions import AgentSession
+    from agent_framework._tools import _FUNCTION_INVOCATION_BUDGET_STATE_KEY
+
+    executions: list[str] = []
+
+    @tool(name="lookup")
+    def lookup(query: str) -> str:
+        executions.append(query)
+        return f"result for {query}"
+
+    chat_client_base.function_invocation_configuration["max_iterations"] = 2  # type: ignore[attr-defined]  # ty: ignore[unresolved-attribute]
+    # One entry per provider call: run 1 makes a tool call and then the provider fails;
+    # run 2 (the retry) makes a tool call and then answers.
+    turns: list[Content | BaseException] = [
+        Content.from_function_call(call_id="call-1", name="lookup", arguments='{"query": "first"}'),
+        failure,
+        Content.from_function_call(call_id="call-2", name="lookup", arguments='{"query": "retry"}'),
+        Content.from_text("final answer"),
+    ]
+    tool_choices: list[Any] = []
+
+    def next_turn(options: dict[str, Any]) -> Content:
+        tool_choices.append(options.get("tool_choice"))
+        turn = turns.pop(0)
+        if isinstance(turn, BaseException):
+            raise turn
+        return turn
+
+    async def non_streaming_response(**kwargs: Any) -> ChatResponse:
+        return ChatResponse(messages=[Message(role="assistant", contents=[next_turn(kwargs["options"])])])
+
+    def streaming_response(**kwargs: Any) -> ResponseStream[ChatResponseUpdate, ChatResponse]:
+        async def updates() -> AsyncIterable[ChatResponseUpdate]:
+            yield ChatResponseUpdate(role="assistant", contents=[next_turn(kwargs["options"])])
+
+        return ResponseStream(updates(), finalizer=ChatResponse.from_updates)
+
+    monkeypatch.setattr(chat_client_base, "_get_non_streaming_response", non_streaming_response)
+    monkeypatch.setattr(chat_client_base, "_get_streaming_response", streaming_response)
+
+    session = AgentSession()
+    agent = Agent(client=chat_client_base, tools=[lookup], middleware=[ToolApprovalMiddleware()])
+
+    async def run(text: str) -> Any:
+        if streaming:
+            stream = agent.run(text, session=session, stream=True)
+            async for _ in stream:
+                pass
+            return await stream.get_final_response()
+        return await agent.run(text, session=session)
+
+    with pytest.raises(type(failure)) as raised:
+        await run("look it up")
+    assert raised.value is failure
+    assert _FUNCTION_INVOCATION_BUDGET_STATE_KEY not in session.state
+
+    response = await run("look it up again")
+
+    assert response.text == "final answer"
+    assert executions == ["first", "retry"]
+    assert "none" not in tool_choices
+    assert _FUNCTION_INVOCATION_BUDGET_STATE_KEY not in session.state
+
+
 async def test_streaming_pending_approval_survives_budget_state_pop(chat_client_base: SupportsChatGetResponse):
     from agent_framework._harness._tool_approval import ToolApprovalMiddleware
     from agent_framework._sessions import AgentSession

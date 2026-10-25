@@ -6447,9 +6447,17 @@ class FunctionInvocationLayer(Generic[OptionsCoT]):
         if mutable_options.get("tools"):
             mutable_options["tools"] = normalize_tools(mutable_options["tools"])
 
+        # A budget shared through the session (ToolApprovalMiddleware) only carries over to a later run
+        # when that run continues a paused request. A run that fails releases it the way a completed run
+        # does, or the retry would start with the failed run's iteration and call counts. Provider
+        # invalidation has its own cleanup.
+        def release_budget_after_failure(error: BaseException) -> None:
+            if not isinstance(error, ResponseInvalidatedException):
+                _clear_budget_state_from_session(invocation_session, budget_state)
+
         # Dispatch to the shape-specific loop; both loops follow the same approval -> model -> execution phases.
         if not stream:
-            return self._get_response_with_function_invocation(
+            response_coroutine = self._get_response_with_function_invocation(
                 super_get_response=super_get_response,
                 messages=messages,
                 options=mutable_options,
@@ -6464,6 +6472,15 @@ class FunctionInvocationLayer(Generic[OptionsCoT]):
                 middleware_pipeline=function_middleware_pipeline,
             )
 
+            async def get_response_releasing_budget_on_failure() -> ChatResponse[Any]:
+                try:
+                    return await response_coroutine
+                except BaseException as error:
+                    release_budget_after_failure(error)
+                    raise
+
+            return get_response_releasing_budget_on_failure()
+
         response_format = mutable_options.get("response_format")
         invalidation_error: list[ResponseInvalidatedException] = []
 
@@ -6472,7 +6489,7 @@ class FunctionInvocationLayer(Generic[OptionsCoT]):
                 raise invalidation_error[0]
             return ChatResponse.from_updates(updates, output_format_type=response_format)
 
-        return ResponseStream(
+        response_stream: ResponseStream[ChatResponseUpdate, ChatResponse[Any]] = ResponseStream(
             self._stream_response_with_function_invocation(
                 super_get_response=super_get_response,
                 messages=messages,
@@ -6490,6 +6507,14 @@ class FunctionInvocationLayer(Generic[OptionsCoT]):
             ),
             finalizer=finalize_stream,
         )
+
+        def release_budget_if_stream_failed() -> None:
+            # Cleanup hooks also run on success; the stream records the error only when it failed.
+            stream_error = response_stream._stream_error  # pyright: ignore[reportPrivateUsage]
+            if stream_error is not None:
+                release_budget_after_failure(stream_error)
+
+        return response_stream.with_cleanup_hook(release_budget_if_stream_failed)
 
 
 # Alias for the @tool decorator, used by security tools and samples
